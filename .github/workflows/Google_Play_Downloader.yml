@@ -43,11 +43,11 @@ jobs:
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
-      - name: ⚡️ Checkout سریع (فقط آخرین commit، بدون فایل‌های زائد)
+      - name: ⚡️ Checkout (fast)
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1        # فقط آخرین commit (کلون سطحی)
-          filter: blob:none     # دانلود نکردن محتوای فایل‌ها تا زمان نیاز
+          fetch-depth: 1
+          filter: blob:none
 
       - name: ⚙️ Set variables from repository_dispatch
         if: github.event_name == 'repository_dispatch'
@@ -72,32 +72,27 @@ jobs:
           path: /usr/local/bin/apkeep
           key: ${{ runner.os }}-apkeep-v0.18.0
 
-      - name: 🌐 Download and install apkeep
+      - name: 🌐 Install apkeep
         if: steps.cache-apkeep.outputs.cache-hit != 'true'
         run: |
           curl -sL https://github.com/EFForg/apkeep/releases/latest/download/apkeep-x86_64-unknown-linux-gnu -o apkeep
           chmod +x apkeep
           sudo mv apkeep /usr/local/bin/apkeep
-          echo "✅ apkeep installed"
 
       - name: 🔍 Extract package name
         run: |
           INPUT="$PACKAGE"
           if [[ "$INPUT" =~ play.google.com/store/apps/details\?id=([^&]+) ]]; then
             PACKAGE="${BASH_REMATCH[1]}"
-          else
-            PACKAGE="$INPUT"
           fi
           echo "PACKAGE=$PACKAGE" >> $GITHUB_ENV
-          echo "📦 Package name: $PACKAGE"
 
-      - name: ⬇️ Download APK via apkeep (APKPure)
+      - name: ⬇️ Download APK
         run: |
           mkdir -p /tmp/apkeep_dl
           apkeep -a "$PACKAGE" /tmp/apkeep_dl
-          echo "✅ Download completed"
 
-      - name: 🧩 Filter architecture, merge, and smart split APK file
+      - name: 🧩 Process APK
         id: process-apk
         run: |
           BASE_FOLDER="$OUTPUT_FOLDER"
@@ -119,16 +114,14 @@ jobs:
 
           DOWNLOADED_FILE=$(find /tmp/apkeep_dl -maxdepth 1 -type f \( -name '*.apk' -o -name '*.xapk' -o -name '*.apks' \) -print -quit 2>/dev/null)
           if [ -z "$DOWNLOADED_FILE" ]; then
-            echo "❌ No file was downloaded"
             echo "STATUS=failed" >> $GITHUB_ENV
             exit 1
           fi
-          echo "📂 Original file: $(basename "$DOWNLOADED_FILE")"
 
           if [[ "$DOWNLOADED_FILE" == *.xapk ]] || [[ "$DOWNLOADED_FILE" == *.apks ]]; then
             TEMP_EXTRACT="/tmp/extracted_apks"
             mkdir -p "$TEMP_EXTRACT"
-            unzip -o "$DOWNLOADED_FILE" -d "$TEMP_EXTRACT"
+            unzip -o "$DOWNLOADED_FILE" -d "$TEMP_EXTRACT" > /dev/null
             rm "$DOWNLOADED_FILE"
             APK_SOURCE="$TEMP_EXTRACT"
           else
@@ -161,13 +154,10 @@ jobs:
             done
             if ! $HAS_KNOWN_ARCH; then
               VALID_APKS+=("$apk")
-            else
-              echo "⏭️ Skipped (different architecture): $apk_name"
             fi
           done
 
           if [ ${#VALID_APKS[@]} -eq 0 ]; then
-            echo "❌ No valid APK found for architecture $ARCH"
             echo "STATUS=failed" >> $GITHUB_ENV
             exit 1
           fi
@@ -180,8 +170,7 @@ jobs:
             TOTAL_SIZE=$SIZE
             MAX_BYTES=$((THRESH_MB * 1024 * 1024))
             if [ "$THRESH_MB" -gt 0 ] && [ "$SIZE" -gt "$MAX_BYTES" ]; then
-              echo "✂️ Splitting APK file into chunks"
-              zip -j -s "${THRESH_MB}m" "$FINAL_DIR/${FINAL_NAME}.zip" "${VALID_APKS[0]}"
+              zip -j -s "${THRESH_MB}m" "$FINAL_DIR/${FINAL_NAME}.zip" "${VALID_APKS[0]}" > /dev/null
               SPLIT_STATUS="true"
               FINAL_FILENAME="${FINAL_NAME}.zip"
             else
@@ -189,7 +178,6 @@ jobs:
               FINAL_FILENAME="$FINAL_NAME"
             fi
           else
-            echo "🔄 Merging ${#VALID_APKS[@]} split APK files"
             TEMP_MERGE="/tmp/merge_apks"
             mkdir -p "$TEMP_MERGE"
             for vapk in "${VALID_APKS[@]}"; do
@@ -197,15 +185,14 @@ jobs:
             done
             FINAL_ARCHIVE="${DATE_PART} - ${PACKAGE}.apks"
             cd "$TEMP_MERGE" || exit 1
-            zip -r "$FINAL_DIR/$FINAL_ARCHIVE" ./*.apk
+            zip -r "$FINAL_DIR/$FINAL_ARCHIVE" ./*.apk > /dev/null
             cd - || exit 1
             SIZE=$(stat -c%s "$FINAL_DIR/$FINAL_ARCHIVE")
             TOTAL_SIZE=$SIZE
             MAX_BYTES=$((THRESH_MB * 1024 * 1024))
             if [ "$THRESH_MB" -gt 0 ] && [ "$SIZE" -gt "$MAX_BYTES" ]; then
-              echo "✂️ Splitting APKS file into chunks"
               cd "$FINAL_DIR" || exit 1
-              zip -s "${THRESH_MB}m" "${FINAL_ARCHIVE}.zip" "$FINAL_ARCHIVE"
+              zip -s "${THRESH_MB}m" "${FINAL_ARCHIVE}.zip" "$FINAL_ARCHIVE" > /dev/null
               rm "$FINAL_ARCHIVE"
               cd - || exit 1
               SPLIT_STATUS="true"
@@ -222,7 +209,7 @@ jobs:
           echo "STATUS=success" >> $GITHUB_ENV
           rm -rf /tmp/apkeep_dl /tmp/extracted_apks 2>/dev/null
 
-      - name: 📊 نمایش جدول وضعیت و لینک دانلود (فارسی)
+      - name: 📊 نمایش نتیجه (فارسی)
         run: |
           SIZE_MB=$(echo "scale=2; $TOTAL_SIZE / 1048576" | bc)
           SIZE_KB=$(echo "scale=2; $TOTAL_SIZE / 1024" | bc)
@@ -262,10 +249,10 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "> 🕒 زمان اتمام: $(date)" >> $GITHUB_STEP_SUMMARY
 
-      - name: 💾 Save and upload to repository
+      - name: 💾 Save and upload
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add "$OUTPUT_FOLDER/"
-          git commit -m "Download APK: $PACKAGE [skip ci]" || echo "No changes"
+          git commit -m "Download APK: $PACKAGE [skip ci]" || true
           git push
