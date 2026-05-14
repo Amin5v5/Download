@@ -83,6 +83,9 @@ jobs:
           FINAL_DIR="${BASE_FOLDER}/${DATE_PART} - ${PACKAGE}"
           mkdir -p "$FINAL_DIR"
 
+          # مهم: تبدیل به مسیر مطلق (برای جلوگیری از خطای cd در ادامه)
+          FINAL_DIR=$(realpath "$FINAL_DIR")
+
           # پیدا کردن فایل دانلود شده
           DOWNLOADED_FILE=$(find /tmp/apkeep_dl -maxdepth 1 -type f \( -name '*.apk' -o -name '*.xapk' -o -name '*.apks' \) -print -quit 2>/dev/null)
           if [ -z "$DOWNLOADED_FILE" ]; then
@@ -139,7 +142,6 @@ jobs:
             done
 
             if ! $HAS_KNOWN_ARCH; then
-              # احتمالاً APK یونیورسال (مناسب برای همه معماری‌ها)
               VALID_APKS+=("$apk")
             else
               echo "⏭️  حذف (معماری متفاوت): $apk_name"
@@ -153,7 +155,6 @@ jobs:
 
           # ادغام به یک APK
           if [ ${#VALID_APKS[@]} -eq 1 ]; then
-            # فقط یک فایل APK
             FINAL_NAME="${DATE_PART} - ${PACKAGE}.apk"
             SIZE=$(stat -c%s "${VALID_APKS[0]}")
             MAX_BYTES=$((THRESH_MB * 1024 * 1024))
@@ -173,6 +174,7 @@ jobs:
             done
             FINAL_ARCHIVE="${DATE_PART} - ${PACKAGE}.apks"
             cd "$TEMP_MERGE" || exit 1
+            # استفاده از مسیر مطلق برای خروجی (دیگر وابسته به دایرکتوری فعلی نیست)
             zip -r "$FINAL_DIR/$FINAL_ARCHIVE" ./*.apk
             cd - || exit 1
             rm -rf "$TEMP_MERGE"
