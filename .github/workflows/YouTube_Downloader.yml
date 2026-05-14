@@ -78,7 +78,6 @@ jobs:
           QUAL = os.environ.get('INPUT_QUALITY')
 
           is_audio = FMT == 'mp3'
-          # اطمینان از صحت کیفیت
           if is_audio:
               if 'kbps' not in QUAL:
                   QUAL = '192kbps'
@@ -98,7 +97,6 @@ jobs:
 
           s = requests.Session()
           s.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
-          # بازدید از صفحه اصلی برای گرفتن کوکی‌های اولیه
           s.get("https://media.ytmp3.gg/")
           resp = s.post("https://hub.ytconvert.org/api/download", json=payload, timeout=30)
           resp.raise_for_status()
@@ -133,6 +131,7 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
               f.write(f"filename={fname}\n")
               f.write(f"title={title}\n")
+              f.write(f"vid={vid}\n")   # برای نام پوشه
           EOF
         env:
           INPUT_URL: ${{ github.event.inputs.video_url }}
@@ -152,6 +151,7 @@ jobs:
           fi
 
       - name: ✂️ Split Large File (if needed)
+        id: split
         run: |
           FILENAME="${{ steps.retrieve.outputs.filename }}"
           THRESH_MB="${{ github.event.inputs.max_part_mb }}"
@@ -167,10 +167,12 @@ jobs:
             zip -r -s "${THRESH_MB}m" "${BASE}.zip" "./$FILENAME"
             rm -- "$FILENAME"
             cd ..
+            echo "SPLIT=true" >> $GITHUB_ENV
             echo "Parts created:"
             ls -lh release_files/
           else
             echo "📦 No split needed ($(( FILESIZE / 1024 / 1024 )) MB)"
+            echo "SPLIT=false" >> $GITHUB_ENV
           fi
 
       - name: 📤 Push to Repository
@@ -178,10 +180,19 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          mkdir -p downloads
-          mv release_files/* downloads/
-          # ذخیره نام اولین فایل برای لینک مستقیم
-          echo "DOWNLOADED_FILE=$(ls downloads/ | head -1)" >> $GITHUB_ENV
+          
+          # ساخت پوشه اختصاصی برای این دانلود
+          VID="${{ steps.retrieve.outputs.vid }}"
+          DATE=$(date +'%Y.%m.%d')
+          FOLDER="downloads/YouTube/${DATE} - ${VID}"
+          mkdir -p "$FOLDER"
+          
+          # انتقال همهٔ فایل‌ها به پوشه جدید
+          mv release_files/* "$FOLDER/"
+          
+          # ذخیره مسیر پوشه برای میانبر
+          echo "DOWNLOAD_FOLDER=${FOLDER}" >> $GITHUB_ENV
+          
           git add downloads/
           git commit -m "⬇️ YouTube: ${{ steps.retrieve.outputs.filename }} [skip ci]" || echo "Nothing to commit"
           git push
@@ -203,15 +214,28 @@ jobs:
           draft: false
           prerelease: false
 
-      - name: 🔗 لینک مستقیم به فایل دانلود شده
+      - name: 🔗 لینک مستقیم به پوشه فایل‌ها
         if: always() && (steps.retrieve.outcome == 'success')
         run: |
           REPO="${{ github.repository }}"
           if [ "${{ github.event.inputs.upload_method }}" = "repository (push to repo)" ]; then
-            ENCODED_FILE=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${DOWNLOADED_FILE}', safe=''))")
-            RAW_URL="https://raw.githubusercontent.com/${REPO}/main/downloads/${ENCODED_FILE}"
-            echo "### 📁 فایل دانلود شده:" >> $GITHUB_STEP_SUMMARY
-            echo "[${DOWNLOADED_FILE}](${RAW_URL})" >> $GITHUB_STEP_SUMMARY
+            FOLDER="${{ env.DOWNLOAD_FOLDER }}"
+            ENCODED_FOLDER=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${FOLDER}', safe='/'))")
+            FOLDER_URL="https://github.com/${REPO}/tree/main/${ENCODED_FOLDER}"
+            
+            echo "### 📁 پوشه دانلود:" >> $GITHUB_STEP_SUMMARY
+            echo "[مشاهده فایل‌ها در ${FOLDER}](${FOLDER_URL})" >> $GITHUB_STEP_SUMMARY
+            
+            if [ "$SPLIT" = "false" ]; then
+              # اگر فقط یک فایل است، لینک مستقیم raw هم بده
+              FILENAME=$(ls "$FOLDER" | head -1)
+              ENCODED_FILE=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${FILENAME}', safe=''))")
+              RAW_URL="https://raw.githubusercontent.com/${REPO}/main/${ENCODED_FOLDER}/${ENCODED_FILE}"
+              echo "### ⬇️ دانلود مستقیم:" >> $GITHUB_STEP_SUMMARY
+              echo "[${FILENAME}](${RAW_URL})" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "💡 فایل به چند قسمت تقسیم شده، همه را از پوشه بالا دانلود کنید." >> $GITHUB_STEP_SUMMARY
+            fi
           else
             TAG="${{ github.event.inputs.release_tag != '' && github.event.inputs.release_tag || format('yt-{0}', github.run_number) }}"
             RELEASE_URL="https://github.com/${REPO}/releases/tag/${TAG}"
