@@ -4,12 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       package_name:
-        description: 'نام پکیج برنامه یا لینک گوگل‌پلی (مثلاً com.whatsapp)'
+        description: 'نام پکیج برنامه یا لینک گوگل‌پلی'
         required: true
         type: string
         default: ''
       output_folder:
-        description: 'پوشه ذخیره‌سازی (نسبت به ریشه مخزن)'
+        description: 'پوشه ذخیره‌سازی'
         required: false
         type: string
         default: 'downloads/GooglePlay'
@@ -25,10 +25,12 @@ on:
           - 'x86_64'
         default: 'arm64-v8a'
       max_part_mb:
-        description: 'حداکثر اندازه هر قطعه (MB) – 0 = بدون تقسیم'
+        description: 'حداکثر اندازه قطعه (MB)'
         required: false
         type: number
         default: 90
+  repository_dispatch:
+    types: [googleplay-download]
 
 permissions:
   contents: write
@@ -42,6 +44,22 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - uses: actions/checkout@v4
+
+      - name: تنظیم متغیرها از dispatch
+        if: github.event_name == 'repository_dispatch'
+        run: |
+          echo "PACKAGE=${{ github.event.client_payload.package_name }}" >> $GITHUB_ENV
+          echo "OUTPUT_FOLDER=${{ github.event.client_payload.output_folder || 'downloads/GooglePlay' }}" >> $GITHUB_ENV
+          echo "ARCHITECTURE=${{ github.event.client_payload.architecture || 'arm64-v8a' }}" >> $GITHUB_ENV
+          echo "MAX_PART_MB=${{ github.event.client_payload.max_part_mb || 90 }}" >> $GITHUB_ENV
+
+      - name: تنظیم متغیرها از workflow_dispatch
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          echo "PACKAGE=${{ github.event.inputs.package_name }}" >> $GITHUB_ENV
+          echo "OUTPUT_FOLDER=${{ github.event.inputs.output_folder }}" >> $GITHUB_ENV
+          echo "ARCHITECTURE=${{ github.event.inputs.architecture }}" >> $GITHUB_ENV
+          echo "MAX_PART_MB=${{ github.event.inputs.max_part_mb }}" >> $GITHUB_ENV
 
       - name: کش کردن apkeep
         id: cache-apkeep
@@ -59,7 +77,7 @@ jobs:
 
       - name: استخراج نام پکیج
         run: |
-          INPUT="${{ github.event.inputs.package_name }}"
+          INPUT="$PACKAGE"
           if [[ "$INPUT" =~ play.google.com/store/apps/details\?id=([^&]+) ]]; then
             PACKAGE="${BASH_REMATCH[1]}"
           else
@@ -73,29 +91,24 @@ jobs:
           mkdir -p /tmp/apkeep_dl
           apkeep -a "$PACKAGE" /tmp/apkeep_dl
 
-      - name: فیلتر دقیق معماری و ادغام در یک APK
+      - name: فیلتر معماری و ادغام APK
         run: |
-          BASE_FOLDER="${{ github.event.inputs.output_folder }}"
+          BASE_FOLDER="$OUTPUT_FOLDER"
           DATE_PART=$(date +'%Y.%m.%d')
-          PACKAGE="${{ env.PACKAGE }}"
-          ARCH="${{ github.event.inputs.architecture }}"
-          THRESH_MB="${{ github.event.inputs.max_part_mb }}"
+          PACKAGE="$PACKAGE"
+          ARCH="$ARCHITECTURE"
+          THRESH_MB="$MAX_PART_MB"
           FINAL_DIR="${BASE_FOLDER}/${DATE_PART} - ${PACKAGE}"
           mkdir -p "$FINAL_DIR"
-
-          # مهم: تبدیل به مسیر مطلق (برای جلوگیری از خطای cd در ادامه)
           FINAL_DIR=$(realpath "$FINAL_DIR")
 
-          # پیدا کردن فایل دانلود شده
           DOWNLOADED_FILE=$(find /tmp/apkeep_dl -maxdepth 1 -type f \( -name '*.apk' -o -name '*.xapk' -o -name '*.apks' \) -print -quit 2>/dev/null)
           if [ -z "$DOWNLOADED_FILE" ]; then
             echo "❌ هیچ فایلی دانلود نشد"
             exit 1
           fi
-
           echo "📂 فایل اصلی: $(basename "$DOWNLOADED_FILE")"
 
-          # استخراج در صورت نیاز
           if [[ "$DOWNLOADED_FILE" == *.xapk ]] || [[ "$DOWNLOADED_FILE" == *.apks ]]; then
             TEMP_EXTRACT="/tmp/extracted_apks"
             mkdir -p "$TEMP_EXTRACT"
@@ -106,33 +119,23 @@ jobs:
             APK_SOURCE="/tmp/apkeep_dl"
           fi
 
-          # لیست معماری‌های شناخته‌شده
           KNOWN_ARCHS=("arm64-v8a" "armeabi-v7a" "x86" "x86_64")
-
-          # جمع‌آوری APKهای معتبر
           VALID_APKS=()
           for apk in "$APK_SOURCE"/*.apk; do
             [ -f "$apk" ] || continue
             apk_name=$(basename "$apk")
-
             if [ "$ARCH" = "auto (همه)" ]; then
               VALID_APKS+=("$apk")
               continue
             fi
-
-            # base و config همیشه لازم‌اند
             if [[ "$apk_name" == "base.apk" ]] || [[ "$apk_name" == config.* ]]; then
               VALID_APKS+=("$apk")
               continue
             fi
-
-            # بررسی وجود معماری درخواستی
             if [[ "$apk_name" == *"${ARCH}"* ]]; then
               VALID_APKS+=("$apk")
               continue
             fi
-
-            # اگر نام فایل هیچ معماری شناخته‌شده‌ای ندارد -> APK یونیورسال
             HAS_KNOWN_ARCH=false
             for known in "${KNOWN_ARCHS[@]}"; do
               if [[ "$apk_name" == *"$known"* ]]; then
@@ -140,7 +143,6 @@ jobs:
                 break
               fi
             done
-
             if ! $HAS_KNOWN_ARCH; then
               VALID_APKS+=("$apk")
             else
@@ -153,20 +155,18 @@ jobs:
             exit 1
           fi
 
-          # ادغام به یک APK
           if [ ${#VALID_APKS[@]} -eq 1 ]; then
             FINAL_NAME="${DATE_PART} - ${PACKAGE}.apk"
             SIZE=$(stat -c%s "${VALID_APKS[0]}")
             MAX_BYTES=$((THRESH_MB * 1024 * 1024))
             if [ "$THRESH_MB" -gt 0 ] && [ "$SIZE" -gt "$MAX_BYTES" ]; then
-              echo "✂️ تقسیم فایل (حجم: $((SIZE/1024/1024))MB)"
+              echo "✂️ تقسیم فایل"
               zip -j -s "${THRESH_MB}m" "$FINAL_DIR/${FINAL_NAME}.zip" "${VALID_APKS[0]}"
             else
               cp "${VALID_APKS[0]}" "$FINAL_DIR/$FINAL_NAME"
             fi
           else
-            # چندین APK (Split) -> ساخت .apks قابل نصب با SAI
-            echo "🔄 ادغام ${#VALID_APKS[@]} فایل Split APK در یک بسته .apks"
+            echo "🔄 ادغام ${#VALID_APKS[@]} فایل Split APK"
             TEMP_MERGE="/tmp/merge_apks"
             mkdir -p "$TEMP_MERGE"
             for vapk in "${VALID_APKS[@]}"; do
@@ -174,29 +174,24 @@ jobs:
             done
             FINAL_ARCHIVE="${DATE_PART} - ${PACKAGE}.apks"
             cd "$TEMP_MERGE" || exit 1
-            # استفاده از مسیر مطلق برای خروجی (دیگر وابسته به دایرکتوری فعلی نیست)
             zip -r "$FINAL_DIR/$FINAL_ARCHIVE" ./*.apk
             cd - || exit 1
             rm -rf "$TEMP_MERGE"
           fi
 
-          # پاکسازی
           rm -rf /tmp/apkeep_dl /tmp/extracted_apks 2>/dev/null
 
-      - name: نمایش لینک به فایل‌ها
+      - name: نمایش لینک
         run: |
-          FOLDER="${{ github.event.inputs.output_folder }}"
-          DATE_PART=$(date +'%Y.%m.%d')
-          PACKAGE="${{ env.PACKAGE }}"
-          REL_DIR="${FOLDER}/${DATE_PART} - ${PACKAGE}"
+          REL_DIR="${OUTPUT_FOLDER}/$(date +'%Y.%m.%d') - ${PACKAGE}"
           ENCODED_DIR=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${REL_DIR}', safe='/'))")
           echo "### 📁 پوشه دانلود:" >> $GITHUB_STEP_SUMMARY
           echo "[مشاهده فایل‌ها](https://github.com/${{ github.repository }}/tree/main/${ENCODED_DIR})" >> $GITHUB_STEP_SUMMARY
 
-      - name: ذخیره و آپلود در مخزن
+      - name: ذخیره و آپلود
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "${{ github.event.inputs.output_folder }}/"
-          git commit -m "دانلود APK: ${{ env.PACKAGE }} [skip ci]" || echo "Nothing to commit"
+          git add "$OUTPUT_FOLDER/"
+          git commit -m "دانلود APK: $PACKAGE [skip ci]" || echo "بدون تغییر"
           git push
