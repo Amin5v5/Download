@@ -3,13 +3,21 @@ name: '⬇️ دانلود از گوگل پلی'
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: '⚡️ حالت اجرا (Fast = فقط Artifact، Full = ذخیره در مخزن)'
+        required: true
+        type: choice
+        options:
+          - 'Fast (فقط دانلود، بدون commit)'
+          - 'Full (دانلود + commit در مخزن)'
+        default: 'Fast (فقط دانلود، بدون commit)'
       package_name:
         description: '📦 نام پکیج یا لینک گوگل‌پلی'
         required: true
         type: string
         default: ''
       output_folder:
-        description: '📁 پوشه ذخیره‌سازی'
+        description: '📁 پوشه ذخیره‌سازی (فقط در حالت Full کاربرد دارد)'
         required: false
         type: string
         default: 'downloads/GooglePlay'
@@ -43,15 +51,20 @@ jobs:
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
-      - name: ⚡️ Checkout (fast)
+      # ==================== حالت سریع: بدون checkout ====================
+      # اگر حالت Fast باشد، این مرحله اجرا نمی‌شود
+      - name: ⚡️ Checkout (only for Full mode)
+        if: github.event.inputs.mode == 'Full (دانلود + commit در مخزن)' || github.event_name == 'repository_dispatch'
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
           filter: blob:none
 
+      # ==================== تنظیم متغیرها ====================
       - name: ⚙️ Set variables from repository_dispatch
         if: github.event_name == 'repository_dispatch'
         run: |
+          echo "MODE=Full" >> $GITHUB_ENV
           echo "PACKAGE=${{ github.event.client_payload.package_name }}" >> $GITHUB_ENV
           echo "OUTPUT_FOLDER=${{ github.event.client_payload.output_folder || 'downloads/GooglePlay' }}" >> $GITHUB_ENV
           echo "ARCHITECTURE=${{ github.event.client_payload.architecture || 'arm64-v8a' }}" >> $GITHUB_ENV
@@ -60,11 +73,17 @@ jobs:
       - name: ⚙️ Set variables from workflow_dispatch
         if: github.event_name == 'workflow_dispatch'
         run: |
+          if [[ "${{ github.event.inputs.mode }}" == *"Fast"* ]]; then
+            echo "MODE=Fast" >> $GITHUB_ENV
+          else
+            echo "MODE=Full" >> $GITHUB_ENV
+          fi
           echo "PACKAGE=${{ github.event.inputs.package_name }}" >> $GITHUB_ENV
           echo "OUTPUT_FOLDER=${{ github.event.inputs.output_folder }}" >> $GITHUB_ENV
           echo "ARCHITECTURE=${{ github.event.inputs.architecture }}" >> $GITHUB_ENV
           echo "MAX_PART_MB=${{ github.event.inputs.max_part_mb }}" >> $GITHUB_ENV
 
+      # ==================== کش و نصب apkeep ====================
       - name: 💾 Cache apkeep
         id: cache-apkeep
         uses: actions/cache@v4
@@ -92,6 +111,7 @@ jobs:
           mkdir -p /tmp/apkeep_dl
           apkeep -a "$PACKAGE" /tmp/apkeep_dl
 
+      # ==================== پردازش فایل (ادغام، فیلتر، تقسیم) ====================
       - name: 🧩 Process APK
         id: process-apk
         run: |
@@ -101,13 +121,18 @@ jobs:
           ARCH="$ARCHITECTURE"
           THRESH_MB="$MAX_PART_MB"
 
-          BASE="${BASE_FOLDER}/${DATE_PART} - ${PACKAGE}"
-          FINAL_DIR="$BASE"
-          i=1
-          while [ -d "$FINAL_DIR" ]; do
-            FINAL_DIR="${BASE}_${i}"
-            i=$((i+1))
-          done
+          # در حالت Fast، پوشه موقت برای آپلود آرتیفکت
+          if [ "$MODE" = "Fast" ]; then
+            FINAL_DIR="/tmp/apk_output"
+          else
+            BASE="${BASE_FOLDER}/${DATE_PART} - ${PACKAGE}"
+            FINAL_DIR="$BASE"
+            i=1
+            while [ -d "$FINAL_DIR" ]; do
+              FINAL_DIR="${BASE}_${i}"
+              i=$((i+1))
+            done
+          fi
           mkdir -p "$FINAL_DIR"
           FINAL_DIR=$(realpath "$FINAL_DIR")
           echo "FINAL_DIR=$FINAL_DIR" >> $GITHUB_ENV
@@ -209,7 +234,8 @@ jobs:
           echo "STATUS=success" >> $GITHUB_ENV
           rm -rf /tmp/apkeep_dl /tmp/extracted_apks 2>/dev/null
 
-      - name: 📊 نمایش نتیجه (فارسی)
+      # ==================== مرحله نمایش نتیجه (مشترک) ====================
+      - name: 📊 نمایش جدول وضعیت و لینک (فارسی)
         run: |
           SIZE_MB=$(echo "scale=2; $TOTAL_SIZE / 1048576" | bc)
           SIZE_KB=$(echo "scale=2; $TOTAL_SIZE / 1024" | bc)
@@ -218,10 +244,6 @@ jobs:
           else
             SIZE_HR="${SIZE_KB} KB"
           fi
-
-          WORKSPACE="${{ github.workspace }}"
-          REL_DIR=$(echo "$FINAL_DIR" | sed "s|^${WORKSPACE}/||")
-          ENCODED_DIR=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${REL_DIR}', safe='/'))")
 
           echo "## 📋 گزارش نهایی دانلود" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -237,22 +259,43 @@ jobs:
           echo "| $STATUS_FA | \`$PACKAGE\` | \`$ARCHITECTURE\` | \`$FINAL_FILENAME\` | $SIZE_HR | $(date +'%Y-%m-%d %H:%M:%S') |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          if [ "$SPLIT" = "true" ]; then
-            echo "### 📁 لینک دسترسی به پوشه (فایل چندتکه)" >> $GITHUB_STEP_SUMMARY
-            echo "[➡️ کلیک کنید تا پوشه حاوی فایل‌ها را ببینید](https://github.com/${{ github.repository }}/tree/main/${ENCODED_DIR})" >> $GITHUB_STEP_SUMMARY
+          # در حالت Fast لینک دانلود وجود ندارد (فقط Artifact)
+          if [ "$MODE" = "Fast" ]; then
+            echo "### ⚡️ حالت سریع: فایل به عنوان Artifact ذخیره شد" >> $GITHUB_STEP_SUMMARY
+            echo "بعد از اتمام کار، می‌توانید فایل را از بخش **Actions** → **این اجرا** → **Artifacts** دانلود کنید." >> $GITHUB_STEP_SUMMARY
           else
-            ENCODED_FILE=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${FINAL_FILENAME}', safe='/'))")
-            RAW_URL="https://raw.githubusercontent.com/${{ github.repository }}/main/${ENCODED_DIR}/${ENCODED_FILE}"
-            echo "### 📁 لینک دانلود مستقیم (فایل یکتکه)" >> $GITHUB_STEP_SUMMARY
-            echo "[⬇️ دانلود فایل ${FINAL_FILENAME}](${RAW_URL})" >> $GITHUB_STEP_SUMMARY
+            WORKSPACE="${{ github.workspace }}"
+            REL_DIR=$(echo "$FINAL_DIR" | sed "s|^${WORKSPACE}/||")
+            ENCODED_DIR=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${REL_DIR}', safe='/'))")
+            if [ "$SPLIT" = "true" ]; then
+              echo "### 📁 لینک دسترسی به پوشه (فایل چندتکه)" >> $GITHUB_STEP_SUMMARY
+              echo "[➡️ کلیک کنید تا پوشه حاوی فایل‌ها را ببینید](https://github.com/${{ github.repository }}/tree/main/${ENCODED_DIR})" >> $GITHUB_STEP_SUMMARY
+            else
+              ENCODED_FILE=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${FINAL_FILENAME}', safe='/'))")
+              RAW_URL="https://raw.githubusercontent.com/${{ github.repository }}/main/${ENCODED_DIR}/${ENCODED_FILE}"
+              echo "### 📁 لینک دانلود مستقیم (فایل یکتکه)" >> $GITHUB_STEP_SUMMARY
+              echo "[⬇️ دانلود فایل ${FINAL_FILENAME}](${RAW_URL})" >> $GITHUB_STEP_SUMMARY
+            fi
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "> 🕒 زمان اتمام: $(date)" >> $GITHUB_STEP_SUMMARY
 
-      - name: 💾 Save and upload
+      # ==================== حالت کامل: commit و push ====================
+      - name: 💾 Save and upload to repository (Full mode only)
+        if: env.MODE == 'Full'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add "$OUTPUT_FOLDER/"
           git commit -m "Download APK: $PACKAGE [skip ci]" || true
           git push
+
+      # ==================== حالت سریع: آپلود به عنوان Artifact ====================
+      - name: 📦 Upload APK as Artifact (Fast mode only)
+        if: env.MODE == 'Fast' && env.STATUS == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: "APK - ${{ env.PACKAGE }} - ${{ env.ARCHITECTURE }}"
+          path: "${{ env.FINAL_DIR }}/${{ env.FINAL_FILENAME }}"
+          if-no-files-found: error
+          retention-days: 7
