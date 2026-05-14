@@ -52,7 +52,7 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       # Checkout only for Full mode با sparse-checkout برای سرعت بالا
-      - name: ⚡️ Checkout سریع (فقط پوشه مورد نیاز)
+      - name: ⚡️ Checkout
         if: github.event.inputs.mode == 'Full (دانلود + commit در مخزن)' || github.event_name == 'repository_dispatch'
         uses: actions/checkout@v4
         with:
@@ -231,7 +231,7 @@ jobs:
           echo "STATUS=success" >> $GITHUB_ENV
           rm -rf /tmp/apkeep_dl /tmp/extracted_apks 2>/dev/null
 
-      - name: 📊 نمایش جدول وضعیت (فارسی)
+      - name: 📊 نمایش جدول وضعیت
         run: |
           SIZE_MB=$(echo "scale=2; $TOTAL_SIZE / 1048576" | bc)
           SIZE_KB=$(echo "scale=2; $TOTAL_SIZE / 1024" | bc)
