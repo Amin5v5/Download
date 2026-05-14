@@ -43,7 +43,11 @@ jobs:
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
-      - uses: actions/checkout@v4
+      - name: ⚡️ Checkout سریع (فقط آخرین commit، بدون فایل‌های زائد)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1        # فقط آخرین commit (کلون سطحی)
+          filter: blob:none     # دانلود نکردن محتوای فایل‌ها تا زمان نیاز
 
       - name: ⚙️ Set variables from repository_dispatch
         if: github.event_name == 'repository_dispatch'
