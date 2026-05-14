@@ -1,4 +1,4 @@
-name: '📥 دانلودر یوتیوب'
+name: '📥 دانلود از یوتیوب'
 
 on:
   workflow_dispatch:
