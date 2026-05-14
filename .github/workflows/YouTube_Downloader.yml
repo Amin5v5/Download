@@ -1,4 +1,4 @@
-name: 'دانلودر یوتیوب (Piped)'
+name: 'دانلودر یوتیوب (بدون نیاز به کوکی)'
 
 on:
   workflow_dispatch:
@@ -21,7 +21,7 @@ on:
         type: string
         default: '720p'
       max_part_mb:
-        description: 'حداکثر حجم هر قسمت (MB) – 0 = 1800'
+        description: 'حداکثر حجم هر قسمت (MB) – 0 = خودکار 1800'
         required: false
         type: string
         default: '90'
@@ -44,132 +44,120 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: استخراج video ID
+      - name: راه‌اندازی Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: نصب وابستگی‌ها
         run: |
-          URL="${{ github.event.inputs.video_url }}"
-          VID=$(echo "$URL" | sed -n 's/.*v=\([a-zA-Z0-9_-]\{11\}\).*/\1/p')
-          if [ -z "$VID" ]; then
-            echo "::error::شناسه ویدیو پیدا نشد"
-            exit 1
-          fi
-          echo "VID=$VID" >> $GITHUB_ENV
+          sudo apt-get update -qq && sudo apt-get install -y ffmpeg
+          npm init -y
+          npm install @distube/ytdl-core
 
-      - name: دریافت لینک‌های استریم از Piped
+      - name: دانلود با ytdl-core
         run: |
-          VID="${{ env.VID }}"
-          # لیست کامل و به‌روز شده از نمونه‌های Piped
-          INSTANCES=(
-            "https://pipedapi.kavin.rocks"        # Official
-            "https://pipedapi-libre.kavin.rocks"  # Official Libre
-            "https://pipedapi.leptons.xyz"
-            "https://pipedapi.nosebs.ru"
-            "https://piped-api.privacy.com.de"
-            "https://pipedapi.adminforge.de"
-            "https://api.piped.yt"
-            "https://pipedapi.drgns.space"
-            "https://pipedapi.owo.si"
-            "https://pipedapi.ducks.party"
-            "https://piped-api.codespace.cz"
-            "https://pipedapi.reallyaweso.me"
-            "https://api.piped.private.coffee"
-            "https://pipedapi.darkness.services"
-            "https://pipedapi.orangenet.cc"
-            "https://pipedapi.tokhmi.xyz"
-            "https://pipedapi.syncpundit.io"
-            "https://pipedapi.moomoo.me"
-          )
-          STREAMS=""
-          for BASE in "${INSTANCES[@]}"; do
-            echo "تلاش با $BASE ..."
-            RESP=$(curl -s --max-time 15 "${BASE}/streams/${VID}")
-            if echo "$RESP" | jq -e '.videoStreams' >/dev/null 2>&1; then
-              STREAMS="$RESP"
-              echo "اتصال موفقیت‌آمیز به $BASE"
-              break
-            else
-              echo "ناموفق: $BASE"
-            fi
-          done
-          if [ -z "$STREAMS" ]; then
-            echo "::error::هیچ نمونه Piped در دسترس نیست. لطفاً کمی بعد دوباره تلاش کنید."
-            exit 1
-          fi
-          echo "$STREAMS" > streams.json
-          echo "✅ اطلاعات استریم دریافت شد"
+          node << 'EOF'
+          const fs = require('fs');
+          const ytdl = require('@distube/ytdl-core');
 
-      - name: انتخاب استریم مناسب و دانلود
-        run: |
-          FORMAT="${{ github.event.inputs.output_format }}"
-          QUAL="${{ github.event.inputs.desired_quality }}"
-          mkdir -p release_files
+          const videoURL = process.env.VIDEO_URL;
+          const format = process.env.OUTPUT_FORMAT; // 'mp4 (video)' or 'mp3 (audio only)'
+          const quality = process.env.DESIRED_QUALITY; // e.g. '720p' or '192kbps'
+          const outputName = process.env.OUTPUT_NAME || 'output';
 
-          if [ "$FORMAT" = "mp3 (audio only)" ]; then
-            # انتخاب بهترین audio با bitrate نزدیک
-            BITRATE=$(echo "$QUAL" | sed 's/kbps//')
-            AUDIO_URL=$(jq -r --arg BR "$BITRATE" '
-              .audioStreams
-              | map(select(.bitrate != null))
-              | sort_by(.bitrate)
-              | last
-              | .url' streams.json)
-            if [ -z "$AUDIO_URL" ]; then
-              echo "::error::استریم صوتی پیدا نشد"
-              exit 1
-            fi
-            echo "دانلود صدا ..."
-            curl -L -o "release_files/audio.webm" "$AUDIO_URL"
-            ffmpeg -y -i "release_files/audio.webm" -b:a "${BITRATE}k" "release_files/output.mp3"
-            rm "release_files/audio.webm"
-          else
-            # کیفیت ویدیو: تبدیل ورودی به حداکثر ارتفاع
-            HEIGHT=$(echo "$QUAL" | sed 's/p//')
-            # انتخاب بهترین ویدیو با ارتفاع <= درخواستی
-            VIDEO_URL=$(jq -r --arg H "$HEIGHT" '
-              .videoStreams
-              | map(select(.height != null and .height <= ($H|tonumber)))
-              | sort_by(.height)
-              | last
-              | .url' streams.json)
-            # انتخاب بهترین صدا
-            AUDIO_URL=$(jq -r '
-              .audioStreams
-              | map(select(.bitrate != null))
-              | sort_by(.bitrate)
-              | last
-              | .url' streams.json)
+          async function download() {
+            const info = await ytdl.getInfo(videoURL);
+            const title = info.videoDetails.title.replace(/[^\w\s\-_]/g, '').substring(0, 60);
+            let outputFile;
 
-            if [ -z "$VIDEO_URL" ] || [ -z "$AUDIO_URL" ]; then
-              echo "::error::استریم ویدیو/صدا یافت نشد"
-              exit 1
-            fi
-            echo "دانلود ویدیو ..."
-            curl -L -o "release_files/video.webm" "$VIDEO_URL"
-            echo "دانلود صدا ..."
-            curl -L -o "release_files/audio.webm" "$AUDIO_URL"
-            echo "ادغام با ffmpeg ..."
-            ffmpeg -y -i "release_files/video.webm" -i "release_files/audio.webm" -c copy "release_files/output.mp4"
-            rm "release_files/video.webm" "release_files/audio.webm"
-          fi
+            if (format === 'mp3 (audio only)') {
+              const bitrate = parseInt(quality) || 128;
+              const audioFormat = ytdl.chooseFormat(info.formats, {
+                quality: 'lowestaudio',
+                filter: 'audioonly'
+              });
+              if (!audioFormat) throw new Error('No audio format found');
+              const audioStream = ytdl.downloadFromInfo(info, { format: audioFormat });
+              const audioPath = `release_files/${title}.webm`;
+              const mp3Path = `release_files/${title}.mp3`;
+              audioStream.pipe(fs.createWriteStream(audioPath));
+              await new Promise((resolve, reject) => {
+                audioStream.on('end', resolve);
+                audioStream.on('error', reject);
+              });
+              // Convert to mp3 with ffmpeg
+              require('child_process').execSync(`ffmpeg -y -i "${audioPath}" -b:a ${bitrate}k "${mp3Path}"`);
+              fs.unlinkSync(audioPath);
+              outputFile = mp3Path;
+            } else {
+              const height = parseInt(quality) || 720;
+              const videoFormat = ytdl.chooseFormat(info.formats, {
+                quality: `highestvideo<=${height}`,
+                filter: 'videoandaudio'
+              });
+              if (videoFormat) {
+                // Progressive download (video+audio combined)
+                const stream = ytdl.downloadFromInfo(info, { format: videoFormat });
+                const mp4Path = `release_files/${title}.mp4`;
+                stream.pipe(fs.createWriteStream(mp4Path));
+                await new Promise((resolve, reject) => {
+                  stream.on('end', resolve);
+                  stream.on('error', reject);
+                });
+                outputFile = mp4Path;
+              } else {
+                // Separate download and merge with ffmpeg
+                const videoOnly = ytdl.chooseFormat(info.formats, {
+                  quality: `bestvideo<=${height}`,
+                  filter: 'videoonly'
+                });
+                const audioOnly = ytdl.chooseFormat(info.formats, {
+                  quality: 'bestaudio',
+                  filter: 'audioonly'
+                });
+                if (!videoOnly || !audioOnly) throw new Error('No suitable formats');
+                const videoPath = `release_files/${title}_video.webm`;
+                const audioPath = `release_files/${title}_audio.webm`;
+                const mp4Path = `release_files/${title}.mp4`;
 
-          if [ ! -s release_files/output.* ]; then
-            echo "::error::فایل خروجی ایجاد نشد"
-            exit 1
-          fi
-          echo "✅ دانلود کامل شد"
-          ls -lh release_files/
+                const videoStream = ytdl.downloadFromInfo(info, { format: videoOnly });
+                const audioStream = ytdl.downloadFromInfo(info, { format: audioOnly });
+                videoStream.pipe(fs.createWriteStream(videoPath));
+                audioStream.pipe(fs.createWriteStream(audioPath));
+                await Promise.all([
+                  new Promise(r => videoStream.on('end', r)),
+                  new Promise(r => audioStream.on('end', r))
+                ]);
+                require('child_process').execSync(`ffmpeg -y -i "${videoPath}" -i "${audioPath}" -c copy "${mp4Path}"`);
+                fs.unlinkSync(videoPath);
+                fs.unlinkSync(audioPath);
+                outputFile = mp4Path;
+              }
+            }
+            console.log(`✅ فایل دانلود شد: ${outputFile}`);
+          }
 
-      - name: تقسیم فایل در صورت نیاز
+          download().catch(err => {
+            console.error('خطا:', err.message);
+            process.exit(1);
+          });
+          EOF
+        env:
+          VIDEO_URL: ${{ github.event.inputs.video_url }}
+          OUTPUT_FORMAT: ${{ github.event.inputs.output_format }}
+          DESIRED_QUALITY: ${{ github.event.inputs.desired_quality }}
+
+      - name: تقسیم فایل‌های حجیم
         run: |
           MAX_MB="${{ github.event.inputs.max_part_mb }}"
-          if [ "$MAX_MB" -le 0 ] || [ "$MAX_MB" -gt 1800 ]; then
-            MAX_MB=1800
-          fi
+          if [ "$MAX_MB" -le 0 ] || [ "$MAX_MB" -gt 1800 ]; then MAX_MB=1800; fi
           cd release_files
           for f in *; do
-            if [ ! -f "$f" ]; then continue; fi
+            [ -f "$f" ] || continue
             SIZE=$(stat -c%s "$f")
             if [ "$SIZE" -gt $((MAX_MB * 1024 * 1024)) ]; then
-              echo "🔪 تقسیم $f به ${MAX_MB}MB ..."
+              echo "🔪 تقسیم $f ..."
               BASE="${f%.*}"
               zip -r -s "${MAX_MB}m" "${BASE}.zip" "./$f"
               rm "$f"
@@ -185,7 +173,7 @@ jobs:
           mkdir -p downloads
           mv release_files/* downloads/
           git add downloads/
-          git commit -m "⬇️ YouTube: ${{ env.VID }}" || echo "Nothing to commit"
+          git commit -m "⬇️ YouTube: ${{ github.event.inputs.video_url }}" || echo "بدون تغییر"
           git push
 
       - name: آپلود در Releases
@@ -201,4 +189,4 @@ jobs:
 
       - name: پاک‌سازی
         if: always()
-        run: rm -rf release_files streams.json
+        run: rm -rf release_files
