@@ -53,6 +53,15 @@ jobs:
           sparse-checkout: |
             downloads/
 
+      - name: 📊 محاسبه حجم قبل از پاکسازی
+        id: before
+        run: |
+          SIZE_BEFORE=0
+          if [[ -d downloads ]]; then
+            SIZE_BEFORE=$(du -sb downloads | cut -f1)
+          fi
+          echo "SIZE_BEFORE=$SIZE_BEFORE" >> $GITHUB_ENV
+
       - name: 🔍 یافتن و حذف فایل‌ها (با رعایت فیلترها)
         id: cleanup
         run: |
@@ -63,7 +72,6 @@ jobs:
           VIDEO_FILTER="${{ github.event.inputs.video_id_filter }}"
           DRY_RUN="${{ github.event.inputs.dry_run == 'true' }}"
 
-          # دایرکتوری‌های پایه
           declare -a DIRS=()
           if [[ "$TARGET" == "Google Play" || "$TARGET" == "Both" ]]; then
             DIRS+=("downloads/GooglePlay")
@@ -72,65 +80,54 @@ jobs:
             DIRS+=("downloads/YouTube")
           fi
 
-          # لیست پوشه‌هایی که باید حذف شوند
           TO_DELETE=()
 
-          # تابع برای بررسی یک پوشه
           check_folder() {
             local folder="$1"
-            local type="$2"  # gp or yt
+            local type="$2"
             local dirname=$(basename "$folder")
 
-            # اگر حذف همه فعال است
             if [[ "$DELETE_ALL" == "true" ]]; then
               TO_DELETE+=("$folder")
               return
             fi
 
-            # فیلتر تاریخ (بر اساس نام پوشه)
             if [[ "$OLDER_DAYS" -gt 0 ]]; then
               date_part=$(echo "$dirname" | awk '{print $1}')
               if [[ "$date_part" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]{2}$ ]]; then
                 dir_epoch=$(date -d "${date_part//./-}" +%s 2>/dev/null)
-                now_epoch=$(date +%s)
-                age_days=$(( (now_epoch - dir_epoch) / 86400 ))
-                if [[ $age_days -lt $OLDER_DAYS ]]; then
-                  return  # خیلی جدید است، حذف نکن
+                if [[ -n "$dir_epoch" ]]; then
+                  now_epoch=$(date +%s)
+                  age_days=$(( (now_epoch - dir_epoch) / 86400 ))
+                  if [[ $age_days -lt $OLDER_DAYS ]]; then
+                    return
+                  fi
                 fi
               fi
             fi
 
-            # فیلتر نام پکیج (Google Play)
             if [[ "$type" == "gp" && -n "$PACKAGE_FILTER" ]]; then
               if [[ "$dirname" != *"$PACKAGE_FILTER"* ]]; then
                 return
               fi
             fi
 
-            # فیلتر آیدی ویدیو (YouTube)
             if [[ "$type" == "yt" && -n "$VIDEO_FILTER" ]]; then
               if [[ "$dirname" != *"$VIDEO_FILTER"* ]]; then
                 return
               fi
             fi
 
-            # اگر همه فیلترها پاس شد، پوشه قابل حذف است
             TO_DELETE+=("$folder")
           }
 
-          # حلقه روی دایرکتوری‌ها و پوشه‌های سطح اول
           for base in "${DIRS[@]}"; do
             if [[ ! -d "$base" ]]; then
               echo "پوشه $base وجود ندارد، ادامه..."
               continue
             fi
-            # تعیین نوع
-            if [[ "$base" == *"GooglePlay" ]]; then
-              type="gp"
-            else
-              type="yt"
-            fi
-            # پیدا کردن همه زیرپوشه‌های سطح اول
+            type="gp"
+            [[ "$base" == *"YouTube" ]] && type="yt"
             for folder in "$base"/*/; do
               if [[ -d "$folder" ]]; then
                 check_folder "${folder%/}" "$type"
@@ -138,49 +135,47 @@ jobs:
             done
           done
 
-          # تعداد موارد یافت شده
           COUNT=${#TO_DELETE[@]}
           echo "COUNT=$COUNT" >> $GITHUB_ENV
-
           if [[ $COUNT -eq 0 ]]; then
             echo "NOTHING_TO_DELETE=true" >> $GITHUB_ENV
-            echo "هیچ فایلی برای حذف یافت نشد."
             exit 0
-          else
-            echo "NOTHING_TO_DELETE=false" >> $GITHUB_ENV
           fi
+          echo "NOTHING_TO_DELETE=false" >> $GITHUB_ENV
 
-          # نمایش لیست
-          echo "فایل‌های زیر حذف خواهند شد:"
-          printf ' - %s\n' "${TO_DELETE[@]}"
-
-          # اگر dry-run است، فقط نمایش بده
           if [[ "$DRY_RUN" == "true" ]]; then
-            echo "🔍 حالت dry-run: هیچ چیزی حذف نشد."
-            # ذخیره لیست برای مرحله بعد (برای نمایش جدول)
             printf "%s\n" "${TO_DELETE[@]}" > to_delete.txt
             exit 0
           fi
 
-          # حذف واقعی
           for folder in "${TO_DELETE[@]}"; do
             rm -rf "$folder"
-            echo "✅ حذف: $folder"
           done
 
-          # حذف پوشه‌های خالی باقی‌مانده (فقط در سطح اول)
           for base in "${DIRS[@]}"; do
             if [[ -d "$base" ]]; then
               find "$base" -mindepth 1 -maxdepth 1 -type d -empty -delete 2>/dev/null || true
             fi
           done
 
-          # ذخیره لیست برای مرحله بعد
           printf "%s\n" "${TO_DELETE[@]}" > to_delete.txt
 
-      - name: 📊 گزارش نهایی و commit تغییرات
+      - name: 📊 گزارش نهایی با نمایش حجم
         if: always()
         run: |
+          SIZE_AFTER=0
+          if [[ -d downloads ]]; then
+            SIZE_AFTER=$(du -sb downloads | cut -f1)
+          fi
+          SIZE_BEFORE=${{ env.SIZE_BEFORE }}
+          SIZE_BEFORE=${SIZE_BEFORE:-0}
+          SIZE_AFTER=${SIZE_AFTER:-0}
+          FREED=$((SIZE_BEFORE - SIZE_AFTER))
+
+          SIZE_BEFORE_MB=$(echo "scale=2; $SIZE_BEFORE / 1048576" | bc 2>/dev/null || echo "0")
+          SIZE_AFTER_MB=$(echo "scale=2; $SIZE_AFTER / 1048576" | bc 2>/dev/null || echo "0")
+          FREED_MB=$(echo "scale=2; $FREED / 1048576" | bc 2>/dev/null || echo "0")
+
           DRY_RUN="${{ github.event.inputs.dry_run == 'true' }}"
           COUNT="${{ env.COUNT }}"
           NOTHING="${{ env.NOTHING_TO_DELETE }}"
@@ -190,64 +185,62 @@ jobs:
           PACKAGE_FILTER="${{ github.event.inputs.package_name_filter }}"
           VIDEO_FILTER="${{ github.event.inputs.video_id_filter }}"
 
+          echo "## 📋 گزارش پاکسازی" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "### 📊 تغییرات حجم مخزن" >> $GITHUB_STEP_SUMMARY
+          echo "| وضعیت | حجم قبل | حجم بعد | فضای آزاد شده |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|----------|----------|----------------|" >> $GITHUB_STEP_SUMMARY
+          if [[ "$DRY_RUN" == "true" ]]; then
+            echo "| 🔍 حالت خشک | ${SIZE_BEFORE_MB} MB | ${SIZE_AFTER_MB} MB | ${FREED_MB} MB |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| ✅ اجرای واقعی | ${SIZE_BEFORE_MB} MB | ${SIZE_AFTER_MB} MB | ${FREED_MB} MB |" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+
           if [[ "$NOTHING" == "true" ]]; then
-            echo "## 📋 گزارش پاکسازی" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
             echo "| وضعیت | هدف | توضیح |" >> $GITHUB_STEP_SUMMARY
             echo "|--------|------|-------|" >> $GITHUB_STEP_SUMMARY
             echo "| ℹ️ بدون تغییر | $TARGET | هیچ فایلی برای حذف یافت نشد |" >> $GITHUB_STEP_SUMMARY
             exit 0
           fi
 
-          # ساختن جدول فارسی
-          echo "## 📋 گزارش پاکسازی" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🗑️ جزئیات حذف" >> $GITHUB_STEP_SUMMARY
           echo "| وضعیت | هدف | فیلترها | تعداد حذف | حالت |" >> $GITHUB_STEP_SUMMARY
           echo "|--------|------|---------|-----------|------|" >> $GITHUB_STEP_SUMMARY
-
-          if [[ "$DRY_RUN" == "true" ]]; then
-            STATUS_ICON="🔍 نمایش (حذف نشد)"
-          else
-            STATUS_ICON="✅ انجام شد"
-          fi
 
           FILTER_DESC=""
           if [[ "$DELETE_ALL" == "true" ]]; then
             FILTER_DESC="حذف همه"
           else
-            if [[ "$OLDER_DAYS" -gt 0 ]]; then
-              FILTER_DESC="قدیمی‌تر از ${OLDER_DAYS} روز"
-            fi
-            if [[ -n "$PACKAGE_FILTER" ]]; then
-              FILTER_DESC="${FILTER_DESC} + پکیج: ${PACKAGE_FILTER}"
-            fi
-            if [[ -n "$VIDEO_FILTER" ]]; then
-              FILTER_DESC="${FILTER_DESC} + ویدیو: ${VIDEO_FILTER}"
-            fi
-            if [[ -z "$FILTER_DESC" ]]; then
-              FILTER_DESC="بدون فیلتر (همه)"
-            fi
+            [[ "$OLDER_DAYS" -gt 0 ]] && FILTER_DESC="قدیمی‌تر از ${OLDER_DAYS} روز"
+            [[ -n "$PACKAGE_FILTER" ]] && FILTER_DESC="${FILTER_DESC} + پکیج: ${PACKAGE_FILTER}"
+            [[ -n "$VIDEO_FILTER" ]] && FILTER_DESC="${FILTER_DESC} + ویدیو: ${VIDEO_FILTER}"
+            [[ -z "$FILTER_DESC" ]] && FILTER_DESC="بدون فیلتر (همه)"
           fi
+
+          STATUS_ICON="✅ انجام شد"
+          [[ "$DRY_RUN" == "true" ]] && STATUS_ICON="🔍 نمایش (حذف نشد)"
 
           echo "| $STATUS_ICON | $TARGET | $FILTER_DESC | $COUNT | $([ "$DRY_RUN" == "true" ] && echo "dry-run" || echo "real") |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          # اگر dry-run نبود، commit و push
           if [[ "$DRY_RUN" != "true" && "$COUNT" -gt 0 ]]; then
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git add downloads/
-            git commit -m "🧹 Cleanup: removed ${COUNT} items from ${TARGET} [skip ci]" || true
+            git commit -m "🧹 Cleanup: removed ${COUNT} items from ${TARGET}, freed ${FREED_MB} MB [skip ci]" || true
             git push
             echo "✅ تغییرات به مخزن ارسال شد." >> $GITHUB_STEP_SUMMARY
           elif [[ "$DRY_RUN" == "true" ]]; then
-            echo "ℹ️ حالت dry-run: هیچ تغییری در مخزن اعمال نشد." >> $GITHUB_STEP_SUMMARY
-            # نمایش لیست فایل‌ها
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### 📄 لیست فایل‌هایی که حذف می‌شدند:" >> $GITHUB_STEP_SUMMARY
-            while IFS= read -r line; do
-              echo "- \`$line\`" >> $GITHUB_STEP_SUMMARY
-            done < to_delete.txt
+            echo "ℹ️ حالت خشک: هیچ تغییری در مخزن اعمال نشد." >> $GITHUB_STEP_SUMMARY
+            if [[ -f to_delete.txt ]]; then
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "### 📄 لیست فایل‌هایی که حذف می‌شدند:" >> $GITHUB_STEP_SUMMARY
+              while IFS= read -r line; do
+                echo "- \`$line\`" >> $GITHUB_STEP_SUMMARY
+              done < to_delete.txt
+            fi
           else
             echo "ℹ️ هیچ تغییری برای commit وجود ندارد." >> $GITHUB_STEP_SUMMARY
           fi
