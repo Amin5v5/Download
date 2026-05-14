@@ -1,4 +1,4 @@
-name: 'دانلود ویدیو یوتیوب'
+name: 'download movies YouTube'
 
 on:
   workflow_dispatch:
