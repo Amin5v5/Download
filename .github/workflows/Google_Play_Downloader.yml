@@ -98,8 +98,7 @@ jobs:
           PACKAGE="$PACKAGE"
           ARCH="$ARCHITECTURE"
           THRESH_MB="$MAX_PART_MB"
-          
-          # ساخت پوشه اختصاصی؛ اگر تکراری بود با شماره نام‌گذاری شود
+
           BASE="${BASE_FOLDER}/${DATE_PART} - ${PACKAGE}"
           FINAL_DIR="$BASE"
           i=1
@@ -164,7 +163,6 @@ jobs:
             exit 1
           fi
 
-          # تشخیص split شدن بعد از این بلوک
           echo "SPLIT=false" >> $GITHUB_ENV
 
           if [ ${#VALID_APKS[@]} -eq 1 ]; then
@@ -172,7 +170,7 @@ jobs:
             SIZE=$(stat -c%s "${VALID_APKS[0]}")
             MAX_BYTES=$((THRESH_MB * 1024 * 1024))
             if [ "$THRESH_MB" -gt 0 ] && [ "$SIZE" -gt "$MAX_BYTES" ]; then
-              echo "✂️ تقسیم فایل"
+              echo "✂️ تقسیم فایل APK"
               zip -j -s "${THRESH_MB}m" "$FINAL_DIR/${FINAL_NAME}.zip" "${VALID_APKS[0]}"
               echo "SPLIT=true" >> $GITHUB_ENV
             else
@@ -185,10 +183,23 @@ jobs:
             for vapk in "${VALID_APKS[@]}"; do
               cp "$vapk" "$TEMP_MERGE/"
             done
-            FINAL_ARCHIVE="${DATE_PART} - ${PACKAGE}.apks"
             cd "$TEMP_MERGE" || exit 1
+            FINAL_ARCHIVE="${DATE_PART} - ${PACKAGE}.apks"
             zip -r "$FINAL_DIR/$FINAL_ARCHIVE" ./*.apk
             cd - || exit 1
+            # --- بررسی سایز فایل APKS و split در صورت نیاز ---
+            SIZE=$(stat -c%s "$FINAL_DIR/$FINAL_ARCHIVE")
+            MAX_BYTES=$((THRESH_MB * 1024 * 1024))
+            if [ "$THRESH_MB" -gt 0 ] && [ "$SIZE" -gt "$MAX_BYTES" ]; then
+              echo "✂️ تقسیم فایل APKS"
+              # پاک کردن فایل اصلی بعد از split
+              cd "$FINAL_DIR" || exit 1
+              zip -s "${THRESH_MB}m" "${FINAL_ARCHIVE}.zip" "$FINAL_ARCHIVE"
+              rm "$FINAL_ARCHIVE"
+              cd - || exit 1
+              echo "SPLIT=true" >> $GITHUB_ENV
+            fi
+            # -----------------------------------------------
             rm -rf "$TEMP_MERGE"
           fi
 
@@ -197,19 +208,16 @@ jobs:
       - name: 🔗 نمایش لینک هوشمند به فایل‌ها
         run: |
           FOLDER="$FINAL_DIR"
-          REL_DIR="${FOLDER#/home/runner/work/*/}"  # مسیر نسبی داخل ریپو
-          # روش دقیق‌تر: حذف مسیر مطلق workspace
           WORKSPACE="${{ github.workspace }}"
           REL_DIR=$(echo "$FOLDER" | sed "s|^${WORKSPACE}/||")
           ENCODED_DIR=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${REL_DIR}', safe='/'))")
-          
+
           if [ "$SPLIT" = "true" ]; then
             echo "### 📁 فایل‌ها (چند تکه):" >> $GITHUB_STEP_SUMMARY
             echo "[مشاهده پوشه دانلود](https://github.com/${{ github.repository }}/tree/main/${ENCODED_DIR})" >> $GITHUB_STEP_SUMMARY
           else
-            # یک فایل سالم داریم؛ لینک مستقیم raw
             FILE=$(ls "$FOLDER" | head -1)
-            ENCODED_FILE=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${FILE}', safe=''))")
+            ENCODED_FILE=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${FILE}', safe='/'))")
             RAW_URL="https://raw.githubusercontent.com/${{ github.repository }}/main/${ENCODED_DIR}/${ENCODED_FILE}"
             echo "### 📁 فایل دانلود شده:" >> $GITHUB_STEP_SUMMARY
             echo "[دانلود مستقیم ${FILE}](${RAW_URL})" >> $GITHUB_STEP_SUMMARY
